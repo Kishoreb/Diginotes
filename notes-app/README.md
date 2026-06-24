@@ -9,7 +9,18 @@ All your data is stored as plain files on disk, inside whatever folder you choos
 - Node.js v18+
 - A network connection that can reach `registry.npmjs.org`, **just for the one-time `npm install`** (the app itself makes zero network calls afterward)
 
-### If `npm install` fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`
+### Before installing on a new or locked-down machine (e.g. a corporate laptop)
+
+Run this first — it needs nothing installed yet, just Node itself:
+
+```bash
+cd notes-app
+node check-dependencies.js
+```
+
+It checks whether every package this project needs can actually be reached on this network, and tells you clearly whether a failure is an SSL-interception issue (fixable, see below) or the registry being blocked outright (not fixable without IT help). Green light here means `npm install` will work; if it doesn't, there's no point trying `npm install` yet.
+
+### If `npm install` (or the check above) fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`
 
 This means something on your machine is intercepting HTTPS traffic for SSL scanning (e.g. Norton Antivirus, or a corporate proxy) and Node doesn't trust its certificate. Fix:
 
