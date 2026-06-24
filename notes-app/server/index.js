@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
+import { execFile } from "child_process";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -72,6 +73,46 @@ function readDirRecursive(dirPath) {
 
 // --- Routes ---
 
+// Browsers can't expose an absolute OS path for a folder picked via <input>,
+// so we ask the server (which has real filesystem access) to pop up the
+// native Windows folder browser and hand back the chosen path.
+app.post("/api/pick-folder", (req, res) => {
+  // A FolderBrowserDialog launched from a background process has no parent
+  // window, so Windows often opens it BEHIND the browser instead of in
+  // front — looks like "nothing happened". An invisible, topmost owner
+  // window forces it to the foreground.
+  const script = [
+    "Add-Type -AssemblyName System.Windows.Forms",
+    "$owner = New-Object System.Windows.Forms.Form",
+    "$owner.TopMost = $true",
+    "$owner.StartPosition = 'Manual'",
+    "$owner.Location = New-Object System.Drawing.Point(-2000,-2000)",
+    "$owner.ShowInTaskbar = $false",
+    "$owner.Size = New-Object System.Drawing.Size(1,1)",
+    "$owner.Show()",
+    "$owner.Activate()",
+    "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "$dialog.Description = 'Choose a folder for your Notes App data'",
+    "$result = $dialog.ShowDialog($owner)",
+    "$owner.Close()",
+    "if ($result -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dialog.SelectedPath }",
+  ].join("; ");
+
+  execFile(
+    "powershell.exe",
+    ["-NoProfile", "-Command", script],
+    { timeout: 120000 },
+    (err, stdout, stderr) => {
+      if (err) {
+        console.error("pick-folder failed:", stderr || err.message);
+        return res.status(500).json({ error: "Failed to open folder picker" });
+      }
+      const selected = stdout.trim();
+      res.json({ path: selected || null });
+    }
+  );
+});
+
 app.get("/api/data-folder", (req, res) => {
   res.json({ folder: getDataFolder() });
 });
@@ -79,6 +120,23 @@ app.get("/api/data-folder", (req, res) => {
 app.post("/api/data-folder", (req, res) => {
   try {
     const folder = setDataFolder(req.body.path);
+    res.json({ folder });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/change-data-folder", (req, res) => {
+  const { newPath, copyExisting } = req.body;
+  if (!newPath) return res.status(400).json({ error: "newPath is required" });
+
+  const currentFolder = getDataFolder();
+  try {
+    if (copyExisting && currentFolder && path.resolve(currentFolder) !== path.resolve(newPath)) {
+      fs.mkdirSync(newPath, { recursive: true });
+      fs.cpSync(currentFolder, newPath, { recursive: true });
+    }
+    const folder = setDataFolder(newPath);
     res.json({ folder });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -127,6 +185,39 @@ app.post("/api/rename-entry", (req, res) => {
   if (fs.existsSync(newPath)) return res.status(400).json({ error: `'${newName}' already exists` });
   fs.renameSync(oldPath, newPath);
   res.json({ path: newPath });
+});
+
+app.post("/api/move-entry", (req, res) => {
+  const { sourcePath, destFolderPath } = req.body;
+  if (!sourcePath || !destFolderPath) {
+    return res.status(400).json({ error: "sourcePath and destFolderPath are required" });
+  }
+  if (!fs.existsSync(sourcePath)) return res.status(400).json({ error: "Source does not exist" });
+  if (!fs.existsSync(destFolderPath) || !fs.statSync(destFolderPath).isDirectory()) {
+    return res.status(400).json({ error: "Destination folder does not exist" });
+  }
+
+  const resolvedSource = path.resolve(sourcePath);
+  const resolvedDest = path.resolve(destFolderPath);
+
+  if (resolvedDest === path.dirname(resolvedSource)) {
+    return res.json({ path: sourcePath }); // already there
+  }
+  if (resolvedDest === resolvedSource || resolvedDest.startsWith(resolvedSource + path.sep)) {
+    return res.status(400).json({ error: "Can't move a folder into itself" });
+  }
+
+  const name = path.basename(sourcePath);
+  const newPath = path.join(destFolderPath, name);
+  if (fs.existsSync(newPath)) {
+    return res.status(400).json({ error: `'${name}' already exists in the destination folder` });
+  }
+  try {
+    fs.renameSync(sourcePath, newPath);
+    res.json({ path: newPath });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post("/api/delete-entry", (req, res) => {
@@ -229,6 +320,110 @@ app.get("/api/list-files", (req, res) => {
       };
     });
   res.json({ files });
+});
+
+// --- Task Board Routes ---
+// Tasks for a project are stored in a sibling `tasks.json` at the project root
+// (next to notes/, canvases/, files/) rather than SQLite, to avoid native
+// module builds on a locked-down corporate laptop.
+
+function tasksFilePath(projectPath) {
+  return path.join(projectPath, "tasks.json");
+}
+
+app.get("/api/tasks", (req, res) => {
+  const projectPath = req.query.projectPath;
+  if (!projectPath) return res.status(400).json({ error: "projectPath is required" });
+  const filePath = tasksFilePath(projectPath);
+  if (!fs.existsSync(filePath)) return res.json({ tasks: [] });
+  try {
+    const tasks = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    res.json({ tasks });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/tasks", (req, res) => {
+  const { projectPath, tasks } = req.body;
+  if (!projectPath || !Array.isArray(tasks)) {
+    return res.status(400).json({ error: "projectPath and tasks array are required" });
+  }
+  fs.writeFileSync(tasksFilePath(projectPath), JSON.stringify(tasks, null, 2), "utf-8");
+  res.json({ success: true });
+});
+
+// --- Search ---
+// No SQLite in this build, so search reads note files on demand instead of
+// maintaining an index. Fine at the target scale (dozens of projects,
+// hundreds of notes) and avoids keeping an index in sync with the filesystem.
+
+const BINARY_EXTENSIONS = new Set([".tldr", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".pdf", ".zip"]);
+const MAX_SEARCH_FILE_SIZE = 5 * 1024 * 1024; // skip oversized files so one huge note can't block the server
+
+function findNoteFiles(dirPath, projectName, results) {
+  if (!fs.existsSync(dirPath)) return;
+  const items = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const item of items) {
+    const itemPath = path.join(dirPath, item.name);
+    if (item.isDirectory()) {
+      if (item.name === "canvases" || item.name === "files") continue;
+      findNoteFiles(itemPath, projectName, results);
+    } else if (!BINARY_EXTENSIONS.has(path.extname(item.name).toLowerCase())) {
+      results.push({ path: itemPath, name: item.name, projectName });
+    }
+  }
+}
+
+function buildSnippet(content, matchIndex, queryLen) {
+  const start = Math.max(0, matchIndex - 40);
+  const end = Math.min(content.length, matchIndex + queryLen + 40);
+  let snippet = content.slice(start, end).replace(/\s+/g, " ").trim();
+  if (start > 0) snippet = "…" + snippet;
+  if (end < content.length) snippet = snippet + "…";
+  return snippet;
+}
+
+app.get("/api/search", (req, res) => {
+  const dataFolder = getDataFolder();
+  if (!dataFolder) return res.status(400).json({ error: "No data folder configured" });
+  const query = (req.query.q || "").trim();
+  if (!query) return res.json({ results: [] });
+
+  const projectsDir = path.join(dataFolder, "projects");
+  const projects = fs.existsSync(projectsDir)
+    ? fs.readdirSync(projectsDir, { withFileTypes: true }).filter((e) => e.isDirectory())
+    : [];
+
+  const noteFiles = [];
+  for (const project of projects) {
+    findNoteFiles(path.join(projectsDir, project.name), project.name, noteFiles);
+  }
+
+  const lowerQuery = query.toLowerCase();
+  const results = [];
+  for (const file of noteFiles) {
+    let content;
+    try {
+      const stats = fs.statSync(file.path);
+      if (stats.size > MAX_SEARCH_FILE_SIZE) continue;
+      content = fs.readFileSync(file.path, "utf-8");
+    } catch (e) {
+      continue; // skip unreadable/non-text files
+    }
+    const matchIndex = content.toLowerCase().indexOf(lowerQuery);
+    if (matchIndex !== -1) {
+      results.push({
+        path: file.path,
+        name: file.name,
+        projectName: file.projectName,
+        snippet: buildSnippet(content, matchIndex, query.length),
+      });
+    }
+    if (results.length >= 50) break;
+  }
+
+  res.json({ results });
 });
 
 // --- Start ---

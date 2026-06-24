@@ -14,17 +14,26 @@ export interface FolderEntry {
   path: string;
   isDir: boolean;
   children?: FolderEntry[];
+  isTaskBoard?: boolean;
 }
+
+export type TaskColumn = "todo" | "in-progress" | "done";
 
 export interface Task {
   id: string;
-  projectName: string;
   title: string;
   description?: string;
   dueDate?: string;
-  column: "todo" | "in-progress" | "done";
+  column: TaskColumn;
   position: number;
   createdAt: string;
+}
+
+export interface SearchResult {
+  path: string;
+  name: string;
+  projectName: string;
+  snippet: string;
 }
 
 export interface AppConfig {

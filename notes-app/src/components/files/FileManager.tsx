@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef } from "react";
+import { Folder, Pencil, Trash2, Upload } from "lucide-react";
 import { api } from "../../lib/api";
+import { FileTypeIcon } from "../../lib/fileIcons";
 
 interface FileInfo {
   name: string;
@@ -18,6 +20,8 @@ function FileManager({ folderPath, onTreeChanged }: FileManagerProps) {
   const [files, setFiles] = useState<FileInfo[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
 
   const loadFiles = async () => {
     try {
@@ -94,6 +98,51 @@ function FileManager({ folderPath, onTreeChanged }: FileManagerProps) {
     }
   };
 
+  const startRename = (file: FileInfo) => {
+    setRenamingPath(file.path);
+    setRenameValue(file.name);
+  };
+
+  const cancelRename = () => {
+    setRenamingPath(null);
+    setRenameValue("");
+  };
+
+  const confirmRename = async () => {
+    if (!renamingPath) return;
+    const newName = renameValue.trim();
+    const current = files.find((f) => f.path === renamingPath);
+    if (!newName || !current || newName === current.name) {
+      cancelRename();
+      return;
+    }
+    try {
+      await api.renameEntry(renamingPath, newName);
+      cancelRename();
+      loadFiles();
+      onTreeChanged();
+    } catch (e) {
+      alert(`Rename failed: ${e}`);
+    }
+  };
+
+  const handleRenameKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") confirmRename();
+    if (e.key === "Escape") cancelRename();
+  };
+
+  const handleDelete = async (file: FileInfo) => {
+    const confirmed = window.confirm(`Delete "${file.name}"? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      await api.deleteEntry(file.path);
+      loadFiles();
+      onTreeChanged();
+    } catch (e) {
+      alert(`Delete failed: ${e}`);
+    }
+  };
+
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -108,13 +157,15 @@ function FileManager({ folderPath, onTreeChanged }: FileManagerProps) {
       onPaste={handlePaste}
       tabIndex={0}
     >
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50">
-        <span className="text-sm font-medium text-gray-700">📁 {folderName}</span>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-slate-200 bg-slate-50">
+        <span className="flex items-center gap-2 text-sm font-medium text-slate-700">
+          <Folder size={16} className="text-indigo-400" /> {folderName}
+        </span>
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
         >
-          Add File
+          <Upload size={13} /> Add File
         </button>
         <input
           ref={fileInputRef}
@@ -126,13 +177,14 @@ function FileManager({ folderPath, onTreeChanged }: FileManagerProps) {
       </div>
 
       <div
-        className={`flex-1 overflow-y-auto p-4 ${dragOver ? "bg-blue-50 border-2 border-dashed border-blue-400" : ""}`}
+        className={`flex-1 overflow-y-auto p-4 ${dragOver ? "bg-indigo-50 border-2 border-dashed border-indigo-400" : ""}`}
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
       >
         {files.length === 0 && (
-          <div className="text-center text-gray-400 mt-8">
+          <div className="text-center text-slate-400 mt-8">
+            <Upload size={28} className="mx-auto mb-2 text-slate-300" />
             <p>No files yet.</p>
             <p className="text-xs mt-1">Drag & drop files here, click "Add File", or paste a screenshot (Ctrl+V).</p>
           </div>
@@ -142,20 +194,47 @@ function FileManager({ folderPath, onTreeChanged }: FileManagerProps) {
           {files.map((file) => (
             <div
               key={file.path}
-              className="flex items-center justify-between px-3 py-2 hover:bg-gray-100 rounded cursor-pointer"
-              onDoubleClick={() => handleOpen(file.path)}
+              className="flex items-center justify-between px-3 py-2 hover:bg-slate-100 rounded-md cursor-pointer group transition-colors"
+              onDoubleClick={() => renamingPath !== file.path && handleOpen(file.path)}
             >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="text-lg">
-                  {file.extension.match(/\.(png|jpg|jpeg|gif|bmp|svg)/) ? "🖼️" :
-                   file.extension === ".pdf" ? "📕" :
-                   file.extension.match(/\.(doc|docx)/) ? "📘" :
-                   file.extension.match(/\.(xls|xlsx)/) ? "📗" :
-                   "📎"}
-                </span>
-                <span className="text-sm truncate">{file.name}</span>
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <FileTypeIcon fileName={file.name} size={18} />
+                {renamingPath === file.path ? (
+                  <input
+                    type="text"
+                    value={renameValue}
+                    onChange={(e) => setRenameValue(e.target.value)}
+                    onKeyDown={handleRenameKeyDown}
+                    onBlur={confirmRename}
+                    onClick={(e) => e.stopPropagation()}
+                    autoFocus
+                    className="flex-1 px-1 py-0 text-sm border border-indigo-400 rounded outline-none"
+                  />
+                ) : (
+                  <span className="text-sm truncate text-slate-700">{file.name}</span>
+                )}
               </div>
-              <span className="text-xs text-gray-400 ml-2 whitespace-nowrap">{formatSize(file.size)}</span>
+              {renamingPath !== file.path && (
+                <>
+                  <span className="text-xs text-slate-400 ml-2 whitespace-nowrap">{formatSize(file.size)}</span>
+                  <div className="flex items-center gap-1 ml-2 opacity-0 group-hover:opacity-100">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); startRename(file); }}
+                      className="text-slate-400 hover:text-indigo-600 p-1 rounded hover:bg-slate-200"
+                      title="Rename"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDelete(file); }}
+                      className="text-slate-400 hover:text-red-500 p-1 rounded hover:bg-slate-200"
+                      title="Delete"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ))}
         </div>

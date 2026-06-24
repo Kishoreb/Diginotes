@@ -1,3 +1,5 @@
+import { SearchResult, Task } from "../types";
+
 const API_BASE = "http://localhost:3001/api";
 
 async function request(endpoint: string, options?: RequestInit) {
@@ -16,10 +18,23 @@ export const api = {
     return data.folder;
   },
 
+  pickFolder: async (): Promise<string | null> => {
+    const data = await request("/pick-folder", { method: "POST" });
+    return data.path;
+  },
+
   setDataFolder: async (path: string): Promise<string> => {
     const data = await request("/data-folder", {
       method: "POST",
       body: JSON.stringify({ path }),
+    });
+    return data.folder;
+  },
+
+  changeDataFolder: async (newPath: string, copyExisting: boolean): Promise<string> => {
+    const data = await request("/change-data-folder", {
+      method: "POST",
+      body: JSON.stringify({ newPath, copyExisting }),
     });
     return data.folder;
   },
@@ -49,6 +64,14 @@ export const api = {
     const data = await request("/rename-entry", {
       method: "POST",
       body: JSON.stringify({ oldPath, newName }),
+    });
+    return data.path;
+  },
+
+  moveEntry: async (sourcePath: string, destFolderPath: string) => {
+    const data = await request("/move-entry", {
+      method: "POST",
+      body: JSON.stringify({ sourcePath, destFolderPath }),
     });
     return data.path;
   },
@@ -106,5 +129,22 @@ export const api = {
   listFiles: async (dirPath: string) => {
     const data = await request(`/list-files?path=${encodeURIComponent(dirPath)}`);
     return data.files;
+  },
+
+  getTasks: async (projectPath: string): Promise<Task[]> => {
+    const data = await request(`/tasks?projectPath=${encodeURIComponent(projectPath)}`);
+    return data.tasks;
+  },
+
+  saveTasks: async (projectPath: string, tasks: Task[]) => {
+    await request("/tasks", {
+      method: "POST",
+      body: JSON.stringify({ projectPath, tasks }),
+    });
+  },
+
+  search: async (query: string): Promise<SearchResult[]> => {
+    const data = await request(`/search?q=${encodeURIComponent(query)}`);
+    return data.results;
   },
 };
