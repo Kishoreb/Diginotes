@@ -1,0 +1,9 @@
+export const APP_NAME = "NotesApp";
+export const LAUNCHER_CONFIG_FILE = "launcher.json";
+export const APP_DB_FILE = "app.db";
+export const CONFIG_FILE = "config.json";
+export const PROJECTS_DIR = "projects";
+export const NOTES_DIR = "notes";
+export const CANVASES_DIR = "canvases";
+export const FILES_DIR = "files";
+export const DEFAULT_HOTKEY = "Ctrl+Shift+N";
